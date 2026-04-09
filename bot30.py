@@ -1,4 +1,5 @@
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
@@ -30,25 +31,30 @@ broadcast_mode = set()
 
 # ---------------- USERS ----------------
 def save_user(user_id):
-    with open(USERS_FILE, "a+") as f:
-        f.seek(0)
-        users = f.read().splitlines()
-        if str(user_id) not in users:
+    users = get_users()
+    if str(user_id) not in users:
+        with open(USERS_FILE, "a") as f:
             f.write(f"{user_id}\n")
 
 def get_users():
     try:
         with open(USERS_FILE, "r") as f:
-            return f.read().splitlines()
+            return list(set([u.strip() for u in f if u.strip().isdigit()]))
     except:
         return []
 
+def remove_user(user_id):
+    users = get_users()
+    users = [u for u in users if u != str(user_id)]
+    with open(USERS_FILE, "w") as f:
+        for u in users:
+            f.write(f"{u}\n")
+
 # ---------------- CHANNELS ----------------
 def save_channel(channel_id):
-    with open(CHANNELS_FILE, "a+") as f:
-        f.seek(0)
-        channels = f.read().splitlines()
-        if str(channel_id) not in channels:
+    channels = get_channels()
+    if str(channel_id) not in channels:
+        with open(CHANNELS_FILE, "a") as f:
             f.write(f"{channel_id}\n")
 
 def get_channels():
@@ -58,20 +64,26 @@ def get_channels():
     except:
         return []
 
-# ---------------- JOIN REQUEST (YOUR ORIGINAL LOGIC) ----------------
+# ---------------- START (IMPORTANT FIX) ----------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    save_user(user_id)
+
+    await update.message.reply_text("✅ You are registered! Now you can join the channel.")
+
+# ---------------- JOIN REQUEST ----------------
 async def handle_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.chat_join_request.from_user.id
 
-    save_user(user_id)  # added for stats/broadcast
+    save_user(user_id)
 
     try:
         await context.bot.copy_message(user_id, CHANNEL_ID, WELCOME_MSG_ID)
         await context.bot.copy_message(user_id, CHANNEL_ID, VIDEO_MSG_ID)
         await context.bot.copy_message(user_id, CHANNEL_ID, APK_MSG_ID)
         await context.bot.copy_message(user_id, CHANNEL_ID, VOICE_MSG_ID)
-
     except Exception as e:
-        print(e)
+        print(f"Join message failed for {user_id}: {e}")
 
 # ---------------- TRACK CHANNELS ----------------
 async def track_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -104,25 +116,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "stats":
-        users = len(get_users())
-        channels = len(get_channels())
-
         await query.message.reply_text(
-            f"📊 Stats\n\n👤 Users: {users}\n📡 Channels: {channels}"
+            f"📊 Stats\n\n👤 Users: {len(get_users())}\n📡 Channels: {len(get_channels())}"
         )
 
     elif query.data == "channels":
         channels = get_channels()
-
-        if not channels:
-            await query.message.reply_text("No channels found.")
-            return
-
-        text = "📡 Channels:\n\n"
-        for c in channels:
-            text += f"`{c}`\n"
-
-        await query.message.reply_text(text, parse_mode="Markdown")
+        text = "\n".join(channels) if channels else "No channels found."
+        await query.message.reply_text(text)
 
     elif query.data == "broadcast":
         broadcast_mode.add(query.from_user.id)
@@ -138,7 +139,6 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     broadcast_mode.remove(user_id)
 
     users = get_users()
-
     sent = 0
     failed = 0
 
@@ -150,7 +150,11 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message_id=update.message.id
             )
             sent += 1
-        except:
+            await asyncio.sleep(0.05)
+
+        except Exception as e:
+            print(f"Removing {u}: {e}")
+            remove_user(u)
             failed += 1
 
     await update.message.reply_text(
@@ -160,17 +164,12 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- APP ----------------
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-# Your original handler
+app.add_handler(CommandHandler("start", start))
 app.add_handler(ChatJoinRequestHandler(handle_join))
-
-# Track channels
 app.add_handler(ChatMemberHandler(track_bot, ChatMemberHandler.MY_CHAT_MEMBER))
 
-# Admin
 app.add_handler(CommandHandler("admin", admin_panel))
 app.add_handler(CallbackQueryHandler(button_handler))
-
-# Broadcast messages
 app.add_handler(MessageHandler(filters.ALL, handle_broadcast))
 
 print("🚀 Bot running...")
